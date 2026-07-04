@@ -1,0 +1,6 @@
+{
+  "name": "AI Spend Tracker & Budget Optimizer",
+  "description": "A premium SaaS subscription spend tracking and budget optimization dashboard with multilingual localizations, dynamic simulated invoice intelligence parsing, and custom glowing interactive charts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
