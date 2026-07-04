@@ -39,8 +39,22 @@ import {
 } from 'lucide-react';
 import { Language, Expense } from './types';
 import { translations } from './translations';
-import { DEFAULT_EXPENSES, simulateGeminiParsing } from './geminiSimulator';
+import { DEFAULT_EXPENSES } from './geminiSimulator';
 import GlowChart from './components/GlowChart';
+
+/** Runtime guard — ensures an unknown value is a valid Expense object. */
+function sanitizeExpense(raw: unknown, index: number): Expense {
+  const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const id = typeof o.id === 'string' && o.id.trim() ? o.id.trim() : String(index + 1);
+  const name = typeof o.name === 'string' && o.name.trim() ? o.name.trim().slice(0, 60) : 'Unknown Service';
+  const status: 'active' | 'inactive' = o.status === 'inactive' ? 'inactive' : 'active';
+  const cost = typeof o.cost === 'number' && isFinite(o.cost) && o.cost >= 0 ? Math.round(o.cost) : 0;
+  const utilization = typeof o.utilization === 'number' && isFinite(o.utilization)
+    ? Math.min(100, Math.max(0, Math.round(o.utilization))) : 50;
+  const recommendationKey = typeof o.recommendationKey === 'string' ? o.recommendationKey.slice(0, 200) : '';
+  const recommendationParam = typeof o.recommendationParam === 'string' ? o.recommendationParam.slice(0, 20) : undefined;
+  return { id, name, status, cost, utilization, recommendationKey, recommendationParam, isOptimized: false };
+}
 
 interface CryptoCurrency {
   name: string;
@@ -55,7 +69,17 @@ interface CryptoCurrency {
 export default function App() {
   const [lang, setLang] = useState<Language>('en');
   const [isLangOpen, setIsLangOpen] = useState(false);
-  const [expenses, setExpenses] = useState<Expense[]>(DEFAULT_EXPENSES);
+  const [expenses, setExpenses] = useState<Expense[]>(() => {
+    try {
+      const saved = localStorage.getItem('saas_expenses');
+      if (!saved) return DEFAULT_EXPENSES;
+      const parsed: unknown = JSON.parse(saved);
+      if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_EXPENSES;
+      return parsed.map(sanitizeExpense);
+    } catch {
+      return DEFAULT_EXPENSES;
+    }
+  });
   const [rawInput, setRawInput] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isUpgradeOpen, setIsUpgradeOpen] = useState(false);
@@ -94,6 +118,11 @@ export default function App() {
   const [txidInput, setTxidInput] = useState('');
   const [verificationStep, setVerificationStep] = useState<number>(0); // 0: idle, 1: contacting, 2: mempool, 3: signing
   const [isCopied, setIsCopied] = useState(false);
+
+  // Persist expenses across reloads
+  useEffect(() => {
+    localStorage.setItem('saas_expenses', JSON.stringify(expenses));
+  }, [expenses]);
 
   // Sync state to localstorage
   useEffect(() => {
@@ -297,15 +326,30 @@ export default function App() {
     triggerToast("Subscription removed from tracking.", "info");
   };
 
-  // Run audit simulation
+  // Run audit — calls the server-side /api/parse endpoint backed by real Gemini AI
   const handleRunAudit = async () => {
     setIsAnalyzing(true);
     try {
-      const parsed = await simulateGeminiParsing(rawInput);
-      setExpenses(parsed);
-      triggerToast(t.toastImportSuccess, 'success');
+      const res = await fetch('/api/parse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rawText: rawInput }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(err.error ?? 'Server error');
+      }
+      const data = await res.json() as { expenses: unknown[] };
+      const validated = Array.isArray(data.expenses) ? data.expenses.map(sanitizeExpense) : [];
+      if (validated.length === 0) {
+        triggerToast('No expenses found in the text. Try a different input.', 'info');
+      } else {
+        setExpenses(validated);
+        triggerToast(t.toastImportSuccess, 'success');
+      }
     } catch (e) {
-      triggerToast('AI Audit processing failed. Please check input formats.', 'info');
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      triggerToast(`AI Audit failed: ${msg}`, 'info');
     } finally {
       setIsAnalyzing(false);
     }
