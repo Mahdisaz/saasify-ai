@@ -2,11 +2,11 @@ import express from 'express';
 import { Pool } from 'pg';
 import { GoogleGenAI } from '@google/genai';
 import path from 'path';
+import { existsSync } from 'node:fs';
 import type { Expense } from './src/types';
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 3001);
-const isProd = process.env.NODE_ENV === 'production';
 
 app.use(express.json({ limit: '32kb' }));
 
@@ -201,8 +201,9 @@ ${rawText}
 });
 
 // In production, serve the Vite-built frontend and let Express handle routing
-if (isProd) {
-  const distPath = path.join(process.cwd(), 'dist');
+// Serve built frontend whenever dist/ exists (production)
+const distPath = path.join(process.cwd(), 'dist');
+if (existsSync(distPath)) {
   app.use(express.static(distPath));
   app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
 }
