@@ -69,17 +69,8 @@ interface CryptoCurrency {
 export default function App() {
   const [lang, setLang] = useState<Language>('en');
   const [isLangOpen, setIsLangOpen] = useState(false);
-  const [expenses, setExpenses] = useState<Expense[]>(() => {
-    try {
-      const saved = localStorage.getItem('saas_expenses');
-      if (!saved) return DEFAULT_EXPENSES;
-      const parsed: unknown = JSON.parse(saved);
-      if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_EXPENSES;
-      return parsed.map(sanitizeExpense);
-    } catch {
-      return DEFAULT_EXPENSES;
-    }
-  });
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [isLoadingExpenses, setIsLoadingExpenses] = useState(true);
   const [rawInput, setRawInput] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isUpgradeOpen, setIsUpgradeOpen] = useState(false);
@@ -119,10 +110,18 @@ export default function App() {
   const [verificationStep, setVerificationStep] = useState<number>(0); // 0: idle, 1: contacting, 2: mempool, 3: signing
   const [isCopied, setIsCopied] = useState(false);
 
-  // Persist expenses across reloads
+  // Load expenses from DB on mount
   useEffect(() => {
-    localStorage.setItem('saas_expenses', JSON.stringify(expenses));
-  }, [expenses]);
+    setIsLoadingExpenses(true);
+    fetch('/api/expenses')
+      .then(r => r.json())
+      .then((data: { expenses: unknown[] }) => {
+        const validated = Array.isArray(data.expenses) ? data.expenses.map(sanitizeExpense) : DEFAULT_EXPENSES;
+        setExpenses(validated.length > 0 ? validated : DEFAULT_EXPENSES);
+      })
+      .catch(() => setExpenses(DEFAULT_EXPENSES))
+      .finally(() => setIsLoadingExpenses(false));
+  }, []);
 
   // Sync state to localstorage
   useEffect(() => {
@@ -304,26 +303,29 @@ export default function App() {
   }, [expenses]);
 
   // Optimize individual subscription row
-  const handleOptimize = (id: string) => {
+  const handleOptimize = async (id: string) => {
     const target = expenses.find(e => e.id === id);
     if (!target || target.isOptimized) return;
 
-    setExpenses(prev => prev.map(exp => {
-      if (exp.id === id) {
-        return { ...exp, isOptimized: true };
-      }
-      return exp;
-    }));
+    setExpenses(prev => prev.map(exp => exp.id === id ? { ...exp, isOptimized: true } : exp));
 
     const savedAmount = target.recommendationParam || '$0';
-    const localizedToastMsg = t.toastOptimizeSuccess.replace('$param', savedAmount);
-    triggerToast(localizedToastMsg, 'success');
+    triggerToast(t.toastOptimizeSuccess.replace('$param', savedAmount), 'success');
+
+    await fetch(`/api/expenses/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isOptimized: true }),
+    }).catch(() => triggerToast('Failed to save to database.', 'info'));
   };
 
   // Delete manual subscription
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     setExpenses(prev => prev.filter(exp => exp.id !== id));
     triggerToast("Subscription removed from tracking.", "info");
+
+    await fetch(`/api/expenses/${id}`, { method: 'DELETE' })
+      .catch(() => triggerToast('Failed to delete from database.', 'info'));
   };
 
   // Run audit — calls the server-side /api/parse endpoint backed by real Gemini AI
@@ -346,6 +348,12 @@ export default function App() {
       } else {
         setExpenses(validated);
         triggerToast(t.toastImportSuccess, 'success');
+        // Persist parsed expenses to DB
+        fetch('/api/expenses/replace', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ expenses: validated }),
+        }).catch(() => console.error('Failed to persist parsed expenses to DB'));
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unknown error';
@@ -377,11 +385,14 @@ export default function App() {
   };
 
   // Clear or Reset Table
-  const handleReset = () => {
+  const handleReset = async () => {
     setExpenses(DEFAULT_EXPENSES);
     setSearchQuery('');
     setStatusFilter('all');
     triggerToast(t.toastCleared, 'info');
+
+    await fetch('/api/expenses/reset', { method: 'POST' })
+      .catch(() => console.error('Failed to reset DB'));
   };
 
   // Export fully detailed Audit Report
@@ -462,8 +473,15 @@ export default function App() {
       isOptimized: false
     };
 
-    setExpenses(prev => [newExpense, ...prev]);
-    
+    setExpenses(prev => [...prev, newExpense]);
+
+    // Persist to DB
+    fetch('/api/expenses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newExpense),
+    }).catch(() => console.error('Failed to save new expense to DB'));
+
     // Clear form
     setFormName('');
     setFormCost('');
@@ -471,7 +489,7 @@ export default function App() {
     setFormStatus('active');
     setFormRecommendation('');
     setShowAddForm(false);
-    
+
     triggerToast(t.toastAdded, 'success');
   };
 
